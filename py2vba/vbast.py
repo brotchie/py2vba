@@ -14,15 +14,40 @@ def indent(items):
     return ['\t' + item for item in items]
 
 class VBType(object):
-    pass
+    _is_object_type = False
 
-class Variant(VBType):
-    def __init__(self):
-        self.name = 'Variant'
+    @classmethod
+    def is_object_type(cls):
+        return cls._is_object_type
 
-class NamedVBType(VBType):
+class ValueType(VBType):
+    _is_object_type = False
+
+class ObjectType(VBType):
+    _is_object_type = True
+
+class NamedValueType(ValueType):
     def __init__(self, name):
         self.name = name
+
+class NamedObjectType(ObjectType):
+    def __init__(self, name):
+        self.name = name
+
+Dictionary = NamedObjectType('Dictionary')
+Collection = NamedObjectType('Collection')
+Object = NamedObjectType('Object')
+Integer = NamedValueType('Integer')
+
+class VariantType(VBType):
+    name = 'Variant'
+
+Variant = VariantType()
+
+BUILTIN_TYPES = [
+    Dictionary, Object, Integer, Variant,
+    Collection
+]
 
 class ASTNode(object):
     def as_code(self):
@@ -55,6 +80,7 @@ class ProceduralModule(Module):
         self.directives = []
         self.declarations = []
         self.code = []
+        self.function_namespace = {}
 
     @property
     def attributes(self):
@@ -86,14 +112,16 @@ class Subroutine(Procedure):
         self.static = static
         self.parameters = parameters
         self.statements = statements
+        self.locals = {}
 
     def as_code(self):
         paramlist = ', '.join(self._reduce_as_code(self.parameters))
         scope = self.scope
         if self.static:
             scope += ' ' + STATIC
-        return ['%s Sub %s(%s)' % (scope, self.name, paramlist),
-                'End Sub']
+        return (['%s Sub %s(%s)' % (scope, self.name, paramlist)] +
+                indent(self._reduce_as_code(self.statements)) +  
+                ['End Sub'])
 
 class Function(Procedure):
     def __init__(self, name, parameters, rettype, statements=None, scope=PUBLIC, static=False):
@@ -103,6 +131,7 @@ class Function(Procedure):
         self.scope = scope
         self.static = static
         self.statements = statements or []
+        self.locals = {}
 
     def as_code(self):
         paramlist = ', '.join(self._reduce_as_code(self.parameters))
@@ -114,15 +143,26 @@ class Function(Procedure):
                 ['End Function'])
 
 class Parameter(ASTNode):
-    def __init__(self, name, vbtype=Variant()):
+    def __init__(self, name, vbtype=Variant):
         self.name = name
         self.vbtype = vbtype
 
     def as_code(self):
         return ['%s As %s' % (self.name.as_code(), self.vbtype.name)]
 
+    def __repr__(self):
+        return 'Parameter(%r, %r)' % (self.name, self.vbtype)
+
 class Statement(ASTNode):
     pass
+
+class CallStatement(Statement):
+    def __init__(self, lexpression, parameters):
+        self.lexpression = lexpression
+        self.parameters = parameters
+
+    def as_code(self):
+        return ['%s %s' % (self.lexpression.as_code(), ', '.join(p.as_code() for p in self.parameters))]
 
 class IfStatement(Statement):
     def __init__(self, expression, thenblock, elseifblocks, elseblock):
@@ -168,9 +208,17 @@ class OperatorExpression(Expression):
         self.right = right
 
     def as_code(self):
-        return ['%s %s %s' % (self.left.as_code(),
+        return '%s %s %s' % (self.left.as_code(),
                              self.binop,
-                             self.right.as_code())]
+                             self.right.as_code())
+class IndexExpression(Expression):
+    def __init__(self, lexpression, args):
+        self.lexpression = lexpression
+        self.args = args
+
+    def as_code(self):
+        return '%s(%s)' % (self.lexpression.as_code(),
+                           ','.join(a.as_code() for a in self.args))
 
 class SimpleNameExpression(Expression):
     def __init__(self, name):
@@ -192,6 +240,36 @@ class LExpression(Expression):
 
     def as_code(self):
         return [self.name]
+
+class NewExpression(Expression):
+    def __init__(self, vbtype):
+        self.vbtype = vbtype
+
+    def as_code(self):
+        return 'New %s' % (self.vbtype.name,)
+
+class MemberAccessExpression(Expression):
+    def __init__(self, lexpression, right):
+        self.lexpression = lexpression
+        self.right = right
+
+    def as_code(self):
+        return '%s.%s' % (self.lexpression.as_code(), self.right.as_code())
+
+class StringLiteral(ASTNode):
+    def __init__(self, value):
+        self.value = value
+
+    def as_code(self):
+        return '"%s"' % (self.value,)
+
+class IntegerLiteral(ASTNode):
+    def __init__(self, value):
+        self.value = value
+
+    def as_code(self):
+        return '%d' % (self.value,)
+
 
 if __name__ == '__main__':
     m = ProceduralModule('Main')
