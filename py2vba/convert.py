@@ -8,6 +8,7 @@ class PythonASTWalkerError(NodeWalkerError):
 BINOP_MAP = {
     _ast.Add : '+',
     _ast.Sub : '-',
+    _ast.Mult : '*',
 }
 
 VBMETA = 'vbmeta'
@@ -19,17 +20,22 @@ def vbmeta(**kwargs):
     return vbmeta_decorator
 
 def _extract_vbmeta_details(call):
-    return dict((kw.arg, kw.value.id) for kw in
-                    call.keywords)
+    return [(kw.arg, kw.value.id) for kw in
+                    call.keywords]
 
 class PythonASTWalker(NodeWalker):
     def __init__(self):
         super(PythonASTWalker, self).__init__()
 
         # State
-        self._in_functiondef = None
         self._in_vbfunction = None
         self._in_vbmodule = None
+        self._assign_lexpression = None
+
+        self._in_vbclassmodule = None
+        self._selfname = None
+
+        self._classnames = []
         
         # Types
         self._types = {}
@@ -45,45 +51,126 @@ class PythonASTWalker(NodeWalker):
         self._in_vbmodule = vbmodule
         for c in module.body:
             if isinstance(c, _ast.FunctionDef):
-                vbmodule.code.append(self.visit_functiondef(c))
+                vbmodule.code.append(self.walk(c))
+            elif isinstance(c, _ast.ClassDef):
+                self.walk(c)
             else:
                 raise PythonASTWalkerError('Unrecognized Python AST node: %r', c)
+
+        vbmodule.raw_code.append(vbast.COLLECTION_LITERAL_HELPERS)
         self._in_vbmodule = None
         return vbmodule
 
-    @visitor(_ast.FunctionDef)
-    def visit_functiondef(self, functiondef):
-        if self._in_functiondef:
-            raise PythonASTWalkerError('Cannot handle nested functiondefs at the moment,')
-
-        # Check if vbmeta in decorators.
+    def _extract_typeinfo_from_functiondef(self, functiondef):
         vbmeta_decorators = [d for d in functiondef.decorator_list if
                                 isinstance(d, _ast.Call) and
                                 d.func.id == VBMETA]
 
-        typeinfo = {}
+        rawtypeinfo = set()
         for d in vbmeta_decorators:
-            typeinfo.update(_extract_vbmeta_details(d))
+            rawtypeinfo.update(_extract_vbmeta_details(d))
+        return dict([(varname, self._types[typename]) for varname, typename in rawtypeinfo])
 
-        self._in_functiondef = functiondef
+    def _build_args(self, functiondef, typeinfo):
+        if self._in_vbclassmodule:
+            functiondefargs = functiondef.args.args[1:]
+            selfname = functiondef.args.args[0].id
+        else:
+            functiondefargs = functiondef.args.args
+            selfname = None
 
-        rettype = self._types.get(typeinfo.get('rettype', None), vbast.Variant)
+        def process_arg(arg):
+            argtype = typeinfo.get(arg.name, vbast.Variant)
+            return vbast.Parameter(arg, argtype)
+
+        return [process_arg(self.walk(a)) for a in functiondefargs], selfname
+
+    def _create_dim_statements(self, vardefs):
+        return [vbast.DimDeclaration(name, type) for name,type in vardefs]
+
+    def _create_and_add_class_ctor(self, functiondef, vbfunction, typeinfo):
+        ctorname = self._in_vbclassmodule.name + '_ctor_'
+
+        if not self._in_vbmodule.class_support_module:
+            self._in_vbmodule.class_support_module = \
+                    vbast.ProceduralModule(self._in_vbmodule.name + 'cls_support')
+
+        self._in_vbmodule.class_support_module.code.append(
+            vbast.Function(
+                ctorname,
+                vbfunction.parameters,
+                self._in_vbclassmodule.vbtype(),
+                [
+                    vbast.SetStatement(
+                        vbast.SimpleNameExpression(ctorname),
+                        vbast.NewExpression(self._in_vbclassmodule.vbtype())
+                    ),
+                    vbast.CallStatement(
+                        vbast.MemberAccessExpression(
+                            vbast.SimpleNameExpression(ctorname),
+                            vbast.SimpleNameExpression('init__'),
+                        ),
+                        [p.name for p in vbfunction.parameters]
+                    )
+                ]
+            )
+        )
+
+        # Try to determine instance variables from assignments
+        # within the __init__ body.
+        instance_variables = {}
+        for stmt in functiondef.body:
+            if not isinstance(stmt, _ast.Assign):
+                continue
+            lhs = stmt.targets[0]
+            isSimpleAssignment = isinstance(lhs, _ast.Attribute) and \
+                    isinstance(lhs.value, _ast.Name)
+
+            if isSimpleAssignment and lhs.value.id == self._selfname:
+                if isinstance(stmt.value, _ast.Name):
+                    rhsname = stmt.value.id
+                else:
+                    rhsname = None
+                instance_variables[lhs.attr] = typeinfo.get(rhsname, vbast.Variant)
+
+        # Create instance variable declarations.
+        self._in_vbclassmodule.declarations += [vbast.PublicVariableDeclaration(name, type) 
+                                                for name, type 
+                                                in instance_variables.iteritems()]
+
+    @visitor(_ast.FunctionDef)
+    def visit_functiondef(self, functiondef):
+        assert not self._in_vbfunction, 'Cannot handle nested functiondefs at the moment,'
+
+        typeinfo = self._extract_typeinfo_from_functiondef(functiondef)
+        rettype = typeinfo.get('rettype', vbast.Variant)
+        args, self._selfname = self._build_args(functiondef, typeinfo)
+
+        if functiondef.name == '__init__' and self._in_vbclassmodule:
+            fname = 'init__'
+        else:
+            fname = functiondef.name
         
-        vbfunction = vbast.Function(functiondef.name,
-                                    self._build_args(functiondef, typeinfo),
-                                    rettype, [])
-        self._in_vbmodule.function_namespace[vbfunction.name] = vbfunction
-        assert self._in_vbfunction is None
+        vbfunction = vbast.Function(fname, args, rettype, [])
+
+        if self._in_vbclassmodule:
+            self._in_vbclassmodule.method_namespace[vbfunction.name] = vbfunction
+        else:
+            self._in_vbmodule.function_namespace[vbfunction.name] = vbfunction
+
+        if fname == 'init__':
+            self._create_and_add_class_ctor(functiondef, vbfunction, typeinfo)
+
         self._in_vbfunction = vbfunction
 
-        vbfunction.statements.extend(sum([self.walk(c) for c in functiondef.body], []))
+        body_statements = sum([self.walk(c) for c in functiondef.body], [])
+        dim_statements = self._create_dim_statements(vbfunction.locals.iteritems())
 
-        # Check locals.
-        vbfunction.statements = [vbast.DimStatement(name, type) for name, type in
-                                    vbfunction.locals.iteritems()] + vbfunction.statements
+        vbfunction.statements = dim_statements + body_statements
 
         self._in_vbfunction = None
-        self._in_functiondef = None
+        self._selfname = None
+
         return vbfunction
 
     @visitor(_ast.Assign)
@@ -92,28 +179,25 @@ class PythonASTWalker(NodeWalker):
             raise PythonASTWalkerError('Cannot handle more than 1 assignment target.')
 
         lexpression = self.walk(assign.targets[0])
-        if isinstance(assign.value, _ast.List):
-            # Handle List literal.
-            assert lexpression.name not in self._in_vbfunction.locals
-            self._in_vbfunction.locals[lexpression.name] = vbast.Collection
-            statements = [vbast.SetStatement(lexpression, vbast.NewExpression(vbast.Collection))]
-            for element in assign.value.elts:
-                statements.append(vbast.CallStatement(
-                    vbast.MemberAccessExpression(lexpression, vbast.SimpleNameExpression('Add')),
-                    [self.walk(element)]))
-            return statements
-        elif isinstance(assign.value, _ast.Dict):
-            # Handle Dictionary literal.
-            assert lexpression.name not in self._in_vbfunction.locals
-            self._in_vbfunction.locals[lexpression.name] = vbast.Dictionary
-            statements = [vbast.SetStatement(lexpression, vbast.NewExpression(vbast.Dictionary))]
-            for (k,v) in zip(assign.value.keys, assign.value.values):
-                statements.append(vbast.LetStatement(
-                        vbast.IndexExpression(lexpression, [self.walk(k)]),
-                        self.walk(v)))
-            return statements
+        rhs = self.walk(assign.value)
+        if isinstance(lexpression, vbast.SimpleNameExpression) and \
+                lexpression.name not in self._in_vbfunction.locals:
+            self._in_vbfunction.locals[lexpression.name] = rhs.vbtype()
+
+        if rhs.vbtype().is_object_type():
+            assignment_statment = vbast.SetStatement
         else:
-            raise PythonASTWalkerError('Unsupported RHS of assignment %r.' % (assign.value,))
+            assignment_statment = vbast.LetStatement
+
+        return [assignment_statment(lexpression, rhs)]
+
+    @visitor(_ast.Dict)
+    def visit_dict(self, dict):
+        return vbast.DictLiteral([(self.walk(k), self.walk(v)) for k,v in zip(dict.keys, dict.values)])
+
+    @visitor(_ast.List)
+    def visit_list(self, list):
+        return vbast.ListLiteral([self.walk(e) for e in list.elts])
 
     @visitor(_ast.Str)
     def visit_str(self, str):
@@ -126,7 +210,6 @@ class PythonASTWalker(NodeWalker):
     @visitor(_ast.Subscript)
     def visit_subscript(self, ss):
         lexpression = self.walk(ss.value)
-        assert self._in_vbfunction.locals.get(lexpression.name) in [vbast.Collection, vbast.Dictionary]
         if isinstance(ss.slice.value, _ast.Num):
             return vbast.IndexExpression(lexpression,
                     [vbast.OperatorExpression('+', vbast.IntegerLiteral(ss.slice.value.n), 
@@ -152,40 +235,48 @@ class PythonASTWalker(NodeWalker):
         else:
             raise PythonASTWalkerError('Unhandled binary operation %s.' % (binop.op,))
 
-    def _build_args(self, functiondef, typeinfo):
-        args = []
+    @visitor(_ast.Call)
+    def visit_call(self, call):
+        if call.func.id in self._classnames:
+            expression = vbast.IndexExpression(
+                    vbast.SimpleNameExpression(call.func.id + '_ctor_'),
+                    [self.walk(a) for a in call.args])
+            expression.set_vbtype(vbast.NamedObjectType(call.func.id))
+        else:
+            expression = vbast.IndexExpression(
+                    self.walk(call.func),
+                    [self.walk(a) for a in call.args])
 
-        def process_arg(arg):
-            argtype = self._types.get(typeinfo.get(arg.name), vbast.Variant)
-            return vbast.Parameter(arg, argtype)
+        return expression
 
-        return [process_arg(self.walk(a)) for a in functiondef.args.args]
+    @visitor(_ast.Attribute)
+    def visit_attribute(self, attribute):
+        return vbast.MemberAccessExpression(
+                self.walk(attribute.value),
+                vbast.SimpleNameExpression(attribute.attr))
 
+    @visitor(_ast.ClassDef)
+    def visit_classdef(self, classdef):
+        self._in_vbclassmodule = vbast.ClassModule(classdef.name)
+        self._classnames.append(classdef.name)
+        self._in_vbmodule.support_modules.append(self._in_vbclassmodule)
+        self._in_vbclassmodule.code.extend([self.walk(c) for c in classdef.body])
+        self._in_vbclassmodule = None
+    
     @visitor(_ast.Name)
     def visit_name(self, name):
-        return vbast.SimpleNameExpression(name.id)
+        if name.id == self._selfname:
+            expression = vbast.SimpleNameExpression('Me')
+        else:
+            expression = vbast.SimpleNameExpression(name.id)
+            if self._in_vbfunction:
+                if name.id in self._in_vbfunction.parameters_names:
+                    expression.set_vbtype(self._in_vbfunction.get_parameter_type(name.id))
+
+        return expression
 
 def build_ast_from_code(code):
     return compile(code, '<unknown>', 'exec', ast.PyCF_ONLY_AST)
 
 def build_module_from_code(code):
     return compile(code, '<unknown>', 'exec')
-
-
-if __name__ == '__main__':
-    CODE = '''
-@vbmeta(x=Integer, y=Integer, rettype=Integer)
-def add(x, y):
-    return x + y
-
-def sub(x,y):
-    return x - y
-
-'''
-
-    codeast = build_ast_from_code(CODE)
-    codemodule = build_module_from_code(CODE)
-    walker = PythonASTWalker()
-    walker.register_type(vbast.Integer)
-    result = walker.walk(codeast)
-    print '\n'.join(result.as_code())

@@ -10,6 +10,31 @@ GLOBAL = 'Global'
 
 STATIC = 'Static'
 
+COLLECTION_LITERAL_HELPERS = """
+Private Function NewCollection(ParamArray params() As Variant) As Collection
+    Dim p As Variant
+    
+    Set NewCollection = New Collection
+    For Each p In params
+        NewCollection.Add p
+    Next p
+End Function
+
+Private Function NewDictionary(ParamArray params() As Variant) As Dictionary
+    Dim k, v As Variant
+    Dim i As Integer
+    
+    Debug.Assert (UBound(params) + 1) Mod 2 = 0
+    Set NewDictionary = New Dictionary
+    For i = LBound(params) To UBound(params) Step 2
+        NewDictionary.Add params(i), params(i + 1)
+    Next i
+End Function
+"""
+
+DICT_LITERAL_HELPER = 'NewDictionary'
+COLLECTION_LITERAL_HELPER = 'NewCollection'
+
 def indent(items):
     return ['\t' + item for item in items]
 
@@ -38,6 +63,7 @@ Dictionary = NamedObjectType('Dictionary')
 Collection = NamedObjectType('Collection')
 Object = NamedObjectType('Object')
 Integer = NamedValueType('Integer')
+String = NamedValueType('String')
 
 class VariantType(VBType):
     name = 'Variant'
@@ -46,7 +72,7 @@ Variant = VariantType()
 
 BUILTIN_TYPES = [
     Dictionary, Object, Integer, Variant,
-    Collection
+    Collection, String
 ]
 
 class ASTNode(object):
@@ -81,19 +107,52 @@ class ProceduralModule(Module):
         self.declarations = []
         self.code = []
         self.function_namespace = {}
+        self.raw_code = []
+        self.support_modules = []
+        self.class_support_module = None
 
     @property
     def attributes(self):
         return [('VB_Name', self.name)]
 
     def as_code(self):
-        return (self._gen_module_header() + [''] +
-                self._reduce_as_code(self.directives) + 
-                self._reduce_as_code(self.declarations) +
-                self._reduce_as_code(self.code))
+        return '\n'.join(self._gen_module_header() + ['', 'Option Explicit'] +
+                         self._reduce_as_code(self.directives) + 
+                         self._reduce_as_code(self.declarations) +
+                         self._reduce_as_code(self.code) +
+                         self.raw_code)
+
+CLASS_HEADER = ["""VERSION 1.0 CLASS
+BEGIN
+    MultiUse = -1 'True
+END
+"""]
 
 class ClassModule(Module):
-    pass
+    def __init__(self, name):
+        self.name = name
+        self.directives = []
+        self.declarations = []
+        self.code = []
+        self.method_namespace = {}
+
+    @property
+    def attributes(self):
+        return [('VB_Name', self.name),
+                ('VB_GlobalNameSpace', 'False'),
+                ('VB_Creatable', 'False'),
+                ('VB_PredeclaredId', 'False'),
+                ('VB_Exposed', 'False')]
+
+    def as_code(self):
+        return '\n'.join(CLASS_HEADER + 
+                         self._gen_module_header() + [''] +
+                         self._reduce_as_code(self.declarations) +
+                         self._reduce_as_code(self.directives) +
+                         self._reduce_as_code(self.code))
+
+    def vbtype(self):
+        return NamedObjectType(self.name)
 
 class ModuleDirective(ASTNode):
     pass
@@ -103,14 +162,22 @@ class OptionExplicitDirective(ModuleDirective):
         return ['Option Explicit']
 
 class Procedure(ASTNode):
-    pass
+    def __init__(self, name, parameters):
+        self.name = name
+        self.parameters = parameters
+
+    @property
+    def parameters_names(self):
+        return [p.name.name for p in self.parameters]
+
+    def get_parameter_type(self, pname):
+        return dict([(p.name.name, p.vbtype) for p in self.parameters])[pname]
 
 class Subroutine(Procedure):
     def __init__(self, name, parameters, statements, scope=PUBLIC, static=False):
-        self.name = name
+        super(Subroutine, self).__init__(name, parameters)
         self.scope = scope
         self.static = static
-        self.parameters = parameters
         self.statements = statements
         self.locals = {}
 
@@ -125,8 +192,7 @@ class Subroutine(Procedure):
 
 class Function(Procedure):
     def __init__(self, name, parameters, rettype, statements=None, scope=PUBLIC, static=False):
-        self.name = name
-        self.parameters = parameters
+        super(Function, self).__init__(name, parameters)
         self.rettype = rettype
         self.scope = scope
         self.static = static
@@ -171,7 +237,10 @@ class IfStatement(Statement):
         self.elseifblocks = elseifblocks
         self.elseblock = elseblock
 
-class DimStatement(Statement):
+class Declaration(ASTNode):
+    pass
+
+class DimDeclaration(Declaration):
     def __init__(self, name, vbtype, static=False):
         self.name = name
         self.vbtype = vbtype
@@ -179,6 +248,14 @@ class DimStatement(Statement):
 
     def as_code(self):
         return ['Dim %s As %s' % (self.name, self.vbtype.name)]
+
+class PublicVariableDeclaration(Declaration):
+    def __init__(self, name, vbtype):
+        self.name = name
+        self.vbtype = vbtype
+
+    def as_code(self):
+        return ['Public %s as %s' % (self.name, self.vbtype.name)]
 
 class LetStatement(Statement):
     def __init__(self, lexpression, expression):
@@ -199,7 +276,13 @@ class SetStatement(Statement):
                                  ''.join(self.expression.as_code()))]
 
 class Expression(ASTNode):
-    pass
+    _vbtype = VariantType
+
+    def set_vbtype(self, vbtype):
+        self._vbtype = vbtype
+
+    def vbtype(self):
+        return self._vbtype
 
 class OperatorExpression(Expression):
     def __init__(self, binop, left, right):
@@ -218,7 +301,7 @@ class IndexExpression(Expression):
 
     def as_code(self):
         return '%s(%s)' % (self.lexpression.as_code(),
-                           ','.join(a.as_code() for a in self.args))
+                           ', '.join(a.as_code() for a in self.args))
 
 class SimpleNameExpression(Expression):
     def __init__(self, name):
@@ -270,6 +353,30 @@ class IntegerLiteral(ASTNode):
     def as_code(self):
         return '%d' % (self.value,)
 
+class DictLiteral(ASTNode):
+    def __init__(self, items):
+       self.items = items
+
+    def vbtype(self):
+        return Dictionary
+
+    def as_code(self):
+        args = sum([list(kv) for kv in self.items], [])
+        return IndexExpression(
+                SimpleNameExpression(DICT_LITERAL_HELPER),
+                args).as_code()
+
+class ListLiteral(ASTNode):
+    def __init__(self, elements):
+        self.elements = elements
+
+    def vbtype(self):
+        return Collection
+
+    def as_code(self):
+        return IndexExpression(
+                SimpleNameExpression(COLLECTION_LITERAL_HELPER),
+                self.elements).as_code()
 
 if __name__ == '__main__':
     m = ProceduralModule('Main')

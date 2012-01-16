@@ -4,6 +4,7 @@ def pytest_funcarg__xl(request):
 
     def finalize():
         xl.DisplayAlerts = 0
+#        xl.visible = 1
         xl.Quit()
 
     request.addfinalizer(finalize)
@@ -15,6 +16,7 @@ def pytest_funcarg__workbook(request):
 
     def finalize():
         wb.Close(False)
+        pass
 
     request.addfinalizer(finalize)
     return wb
