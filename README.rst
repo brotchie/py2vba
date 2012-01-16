@@ -34,7 +34,7 @@ following Python code is converted to a collection of VBA modules::
         return c.employees[1].name
 
 PyMain.bas
----------
+----------
 ::
     Public Function test() As String
         Dim c As Company
