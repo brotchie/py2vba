@@ -36,6 +36,7 @@ following Python code is converted to a collection of VBA modules::
 PyMain.bas
 ----------
 ::
+
     Public Function test() As String
         Dim c As Company
         Set c = Company_ctor_(NewCollection(Person_ctor_("James", 27), Person_ctor_("Bob", 22)))
@@ -65,6 +66,7 @@ PyMain.bas
 PyMaincls_support.bas
 ---------------------
 ::
+
     Public Function Person_ctor_(name As String, age As Integer) As Person
         Set Person_ctor_ = New Person
         Person_ctor_.init__ name, age
@@ -77,6 +79,7 @@ PyMaincls_support.bas
 Person.cls
 ----------
 ::
+
     Public age as Integer
     Public name as String
     Public Function init__(name As String, age As Integer) As Variant
@@ -87,6 +90,7 @@ Person.cls
 Company.cls
 -----------
 ::
+
     Public employees as Collection
     Public Function init__(employees As Collection) As Variant
         Set Me.employees = employees
