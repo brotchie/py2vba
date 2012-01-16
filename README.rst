@@ -8,7 +8,7 @@ additional add-ins or COM objects.
 
 Example
 =======
-py2vba can currently handle a variety of Python to VBA translation. The
+py2vba handles a variety of Python constructs. The
 following Python code is converted to a collection of VBA modules::
 
     from py2vba.convert import vbmeta
