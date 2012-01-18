@@ -152,4 +152,79 @@ def test():
 
     assert pyresult == vbaresult
 
+def test_if_statement(xl, workbook):
+    CODE = '''
+@vbmeta(x=Integer, y=Integer, rettype=Integer)
+def max(x, y):
+    if x > y:
+        return x
+    else:
+        return y
+'''
+    pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'max', globals(), xl, workbook)
+
+    pyresult1 = pyfcn(1,5)
+    vbaresult1 = vbafcn(1,5)
+
+    pyresult2 = pyfcn(5,1)
+    vbaresult2 = vbafcn(5,1)
+
+    assert pyresult1 == vbaresult1
+    assert pyresult2 == vbaresult2
+
+    
+def test_nested_if_statement(xl, workbook):
+    CODE = '''
+def absadd(x, y):
+    if x < 0:
+        if y < 0:
+            return -x-y
+        else:
+            return -x+y
+    else:
+        if y < 0:
+            return x-y
+        else:
+            return x+y
+'''
+    pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'absadd', globals(), xl, workbook)
+
+    cases = [(-5,5),(-5,-5),(5,5),(5,-5)]
+    for case in cases:
+        pyresult = pyfcn(*case)
+        vbaresult = vbafcn(*case)
+        assert pyresult == vbaresult
+
+def test_elif_statement(xl, workbook):
+    CODE = '''
+def sign(x):
+    if x < 0:
+        return -1
+    elif x == 0:
+        return 0
+    else:
+        return 1
+'''
+    pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'sign', globals(), xl, workbook)
+
+    cases = [-5, 0, 5]
+    for case in cases:
+        pyresult = pyfcn(case)
+        vbaresult = vbafcn(case)
+        assert pyresult == vbaresult
+
+def test_integer_for_loop(xl, workbook):
+    CODE = '''
+def test():
+    sum = 0
+    for i in range(1,10):
+        sum += i
+    return sum
+'''
+    pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'test', globals(), xl, workbook)
+
+    pyresult = pyfcn()
+    vbaresult = vbafcn()
+
+    assert pyresult == vbaresult
 

@@ -45,6 +45,10 @@ def lift_vba_function(xl, workbook, ast, fname):
     project = VBProject()
     project.add_reference(*SCRIPTING_REFERENCE)
     export.add_procedural_module_to_vbproject(project, ast)
+    for module in project.modules:
+        print module.name
+        print module.code
+
     import_vbproject(workbook, project)
 
     def lifted(*args):

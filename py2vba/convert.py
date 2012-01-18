@@ -11,6 +11,18 @@ BINOP_MAP = {
     _ast.Mult : '*',
 }
 
+UNARYOP_MAP = {
+    _ast.USub : '-',
+}
+
+COMPAREOP_MAP = {
+    _ast.Gt : '>',
+    _ast.Lt : '<',
+    _ast.GtE : '>=',
+    _ast.LtE : '<=',
+    _ast.Eq : '=', 
+}
+
 VBMETA = 'vbmeta'
 
 def vbmeta(**kwargs):
@@ -212,7 +224,7 @@ class PythonASTWalker(NodeWalker):
         lexpression = self.walk(ss.value)
         if isinstance(ss.slice.value, _ast.Num):
             return vbast.IndexExpression(lexpression,
-                    [vbast.OperatorExpression('+', vbast.IntegerLiteral(ss.slice.value.n), 
+                    [vbast.BinOp('+', vbast.IntegerLiteral(ss.slice.value.n), 
                                              vbast.IntegerLiteral(1))])
         elif isinstance(ss.slice.value, _ast.Str):
             return vbast.IndexExpression(lexpression, [vbast.StringLiteral(ss.slice.value.s)])
@@ -222,18 +234,27 @@ class PythonASTWalker(NodeWalker):
     @visitor(_ast.Return)
     def visit_return(self, ret):
         assert self._in_vbfunction
+        if isinstance(self._in_vbfunction, vbast.Function):
+            return_statement = vbast.ExitFunctionStatement()
+        else:
+            return_statement = vbast.ExitSubStatement()
         return [vbast.LetStatement(
                  vbast.SimpleNameExpression(self._in_vbfunction.name),
-                 self.walk(ret.value))]
+                 self.walk(ret.value)), return_statement]
 
     @visitor(_ast.BinOp)
     def visit_binop(self, binop):
         if binop.op.__class__ in BINOP_MAP:
-            return vbast.OperatorExpression(BINOP_MAP[binop.op.__class__],
+            return vbast.BinOp(BINOP_MAP[binop.op.__class__],
                     self.walk(binop.left), 
                     self.walk(binop.right))
         else:
             raise PythonASTWalkerError('Unhandled binary operation %s.' % (binop.op,))
+
+    @visitor(_ast.UnaryOp)
+    def visit_unaryop(self, unaryop):
+        return vbast.UnaryOp(UNARYOP_MAP[unaryop.op.__class__],
+                self.walk(unaryop.operand))
 
     @visitor(_ast.Call)
     def visit_call(self, call):
@@ -274,6 +295,50 @@ class PythonASTWalker(NodeWalker):
                     expression.set_vbtype(self._in_vbfunction.get_parameter_type(name.id))
 
         return expression
+
+    @visitor(_ast.If)
+    def visit_ifstatement(self, ifstmt):
+        return [vbast.IfStatement(
+            self.walk(ifstmt.test),
+            self._walk_block(ifstmt.body),
+            [], self._walk_block(ifstmt.orelse))]
+
+    @visitor(_ast.Compare)
+    def visit_compare(self, compare):
+        return vbast.BinOp(
+                COMPAREOP_MAP[compare.ops[0].__class__],
+                self.walk(compare.left),
+                self.walk(compare.comparators[0]))
+
+    @visitor(_ast.For)
+    def visit_for(self, forstmt):
+        # Currently only support interpreting range
+        # with 2 arguments.
+        assert forstmt.iter.func.id == 'range'
+        assert len(forstmt.iter.args) == 2
+        
+        ifrom = forstmt.iter.args[0].n
+        ito = forstmt.iter.args[1].n - 1
+
+        if forstmt.target.id not in self._in_vbfunction.locals:
+            self._in_vbfunction.locals[forstmt.target.id] = vbast.Integer
+
+        return [vbast.ForStatement(
+            self.walk(forstmt.target),
+            self._walk_block(forstmt.body),
+            vbast.IntegerLiteral(ifrom),
+            vbast.IntegerLiteral(ito))]
+
+    @visitor(_ast.AugAssign)
+    def visit_augassign(self, augassign):
+        return [vbast.LetStatement(
+                self.walk(augassign.target),
+                vbast.BinOp(BINOP_MAP[augassign.op.__class__],
+                            self.walk(augassign.target),
+                            self.walk(augassign.value)))]
+
+    def _walk_block(self, block):
+        return sum([self.walk(c) for c in block], [])
 
 def build_ast_from_code(code):
     return compile(code, '<unknown>', 'exec', ast.PyCF_ONLY_AST)

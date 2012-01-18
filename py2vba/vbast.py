@@ -208,6 +208,14 @@ class Function(Procedure):
                 indent(self._reduce_as_code(self.statements)) +  
                 ['End Function'])
 
+class ExitSubStatement(ASTNode):
+    def as_code(self):
+        return ['Exit Sub']
+
+class ExitFunctionStatement(ASTNode):
+    def as_code(self):
+        return ['Exit Function']
+
 class Parameter(ASTNode):
     def __init__(self, name, vbtype=Variant):
         self.name = name
@@ -231,11 +239,35 @@ class CallStatement(Statement):
         return ['%s %s' % (self.lexpression.as_code(), ', '.join(p.as_code() for p in self.parameters))]
 
 class IfStatement(Statement):
-    def __init__(self, expression, thenblock, elseifblocks, elseblock):
-        self.expression = expression
-        self.thenblock = thenblock
+    def __init__(self, test, body, elseifblocks, orelse):
+        self.test = test
+        self.body = body
         self.elseifblocks = elseifblocks
-        self.elseblock = elseblock
+        self.orelse = orelse
+
+    def as_code(self):
+        code = ['If %s Then' % (self.test.as_code(),)]
+        code += indent(self._reduce_as_code(self.body))
+        if self.orelse:
+            code += ['Else']
+            code += indent(self._reduce_as_code(self.orelse))
+        code += ['End If']
+        return code
+
+class ForStatement(Statement):
+    def __init__(self, target, body, ifrom, ito):
+        self.target = target
+        self.body = body
+        self.ifrom = ifrom
+        self.ito = ito
+
+    def as_code(self):
+        code = ['For %s = %s To %s' % (self.target.as_code(),
+                                       self.ifrom.as_code(),
+                                       self.ito.as_code())]
+        code += indent(self._reduce_as_code(self.body))
+        code += ['Next %s' % (self.target.as_code(),)]
+        return code
 
 class Declaration(ASTNode):
     pass
@@ -284,7 +316,7 @@ class Expression(ASTNode):
     def vbtype(self):
         return self._vbtype
 
-class OperatorExpression(Expression):
+class BinOp(Expression):
     def __init__(self, binop, left, right):
         self.binop = binop
         self.left = left
@@ -294,6 +326,15 @@ class OperatorExpression(Expression):
         return '%s %s %s' % (self.left.as_code(),
                              self.binop,
                              self.right.as_code())
+class UnaryOp(Expression):
+    def __init__(self, op, operand):
+        self.op = op
+        self.operand = operand
+
+    def as_code(self):
+        return '%s%s' % (self.op,
+                         self.operand.as_code())
+
 class IndexExpression(Expression):
     def __init__(self, lexpression, args):
         self.lexpression = lexpression
@@ -346,12 +387,18 @@ class StringLiteral(ASTNode):
     def as_code(self):
         return '"%s"' % (self.value,)
 
+    def vbtype(self):
+        return String
+
 class IntegerLiteral(ASTNode):
     def __init__(self, value):
         self.value = value
 
     def as_code(self):
         return '%d' % (self.value,)
+
+    def vbtype(self):
+        return Integer
 
 class DictLiteral(ASTNode):
     def __init__(self, items):
