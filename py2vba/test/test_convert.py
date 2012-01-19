@@ -228,3 +228,20 @@ def test():
 
     assert pyresult == vbaresult
 
+def test_list_comprehension(xl, workbook):
+    CODE = '''
+def test():
+    x = [1,2,3,4,5,6,7,8,9,10]
+    y = [z*z for z in x if x > 3 and x <= 9]
+    sum = 0
+    for z in y:
+        sum += z
+    return sum
+'''
+    pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'test', globals(), xl, workbook)
+
+    pyresult = pyfcn()
+    vbaresult = vbafcn()
+
+    assert pyresult == vbaresult
+

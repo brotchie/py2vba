@@ -81,7 +81,7 @@ class PythonASTWalker(NodeWalker):
         rawtypeinfo = set()
         for d in vbmeta_decorators:
             rawtypeinfo.update(_extract_vbmeta_details(d))
-        return dict([(varname, self._types[typename]) for varname, typename in rawtypeinfo])
+        return {varname:self._types[typename] for varname, typename in rawtypeinfo}
 
     def _build_args(self, functiondef, typeinfo):
         if self._in_vbclassmodule:
@@ -336,6 +336,18 @@ class PythonASTWalker(NodeWalker):
                 vbast.BinOp(BINOP_MAP[augassign.op.__class__],
                             self.walk(augassign.target),
                             self.walk(augassign.value)))]
+
+    @visitor(_ast.ListComp)
+    def visit_listcomp(self, listcomp):
+        assert len(listcomp.generators) == 1
+        print listcomp
+        print dir(listcomp)
+        print listcomp.elt
+        print listcomp.generators
+        print dir(listcomp.generators[0])
+        print listcomp.generators[0].ifs
+        print listcomp.generators[0].iter
+        print listcomp.generators[0].target
 
     def _walk_block(self, block):
         return sum([self.walk(c) for c in block], [])

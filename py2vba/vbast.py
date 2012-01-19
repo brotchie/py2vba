@@ -171,7 +171,7 @@ class Procedure(ASTNode):
         return [p.name.name for p in self.parameters]
 
     def get_parameter_type(self, pname):
-        return dict([(p.name.name, p.vbtype) for p in self.parameters])[pname]
+        return {p.name.name : p.vbtype for p in self.parameters}[pname]
 
 class Subroutine(Procedure):
     def __init__(self, name, parameters, statements, scope=PUBLIC, static=False):
