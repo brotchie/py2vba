@@ -9,6 +9,7 @@ BINOP_MAP = {
     _ast.Add : '+',
     _ast.Sub : '-',
     _ast.Mult : '*',
+    _ast.Mod : 'Mod',
 }
 
 UNARYOP_MAP = {
@@ -21,6 +22,11 @@ COMPAREOP_MAP = {
     _ast.GtE : '>=',
     _ast.LtE : '<=',
     _ast.Eq : '=', 
+}
+
+BOOLOP_MAP = {
+    _ast.And : 'And',
+    _ast.Or : 'Or',
 }
 
 VBMETA = 'vbmeta'
@@ -238,7 +244,11 @@ class PythonASTWalker(NodeWalker):
             return_statement = vbast.ExitFunctionStatement()
         else:
             return_statement = vbast.ExitSubStatement()
-        return [vbast.LetStatement(
+        if self._in_vbfunction.rettype.is_object_type():
+            assign_stmt_type = vbast.SetStatement
+        else:
+            assign_stmt_type = vbast.LetStatement
+        return [assign_stmt_type(
                  vbast.SimpleNameExpression(self._in_vbfunction.name),
                  self.walk(ret.value)), return_statement]
 
@@ -337,17 +347,68 @@ class PythonASTWalker(NodeWalker):
                             self.walk(augassign.target),
                             self.walk(augassign.value)))]
 
+    @visitor(_ast.BoolOp)
+    def visit_boolop(self, boolop):
+        expr = vbast.BinOp(
+                BOOLOP_MAP[boolop.op.__class__],
+                self.walk(boolop.values[0]),
+                self.walk(boolop.values[1]))
+        for i in range(2, len(boolop.values)):
+            expr = vbast.BinOp(
+                    BOOLOP_MAP[boolop.op.__class__],
+                    expr, self.walk(boolop.values[i]))
+        return expr
+
     @visitor(_ast.ListComp)
     def visit_listcomp(self, listcomp):
-        assert len(listcomp.generators) == 1
-        print listcomp
-        print dir(listcomp)
-        print listcomp.elt
-        print listcomp.generators
-        print dir(listcomp.generators[0])
-        print listcomp.generators[0].ifs
-        print listcomp.generators[0].iter
-        print listcomp.generators[0].target
+        assert len(listcomp.generators) == 1, 'List comp conversion only supports a single generator.'
+        assert len(listcomp.generators[0].ifs) <= 1
+        itervars = { self.walk(listcomp.generators[0].iter) }
+        itervarnames = { n.name for n in itervars }
+        target = self.walk(listcomp.generators[0].target)
+
+        # Determine if there are any other variables to include as
+        # as closure.
+        othervars = { self.walk(n) for n in ast.walk(listcomp) 
+                        if isinstance(n, _ast.Name) and
+                           n.id not in itervarnames and
+                           n.id != target.name }
+
+        fname = '%s_listcomp_%i' % (self._in_vbfunction.name, len(self._in_vbfunction.listcomps))
+
+        vbfunctionlocals = {p.name : p.vbtype for p in self._in_vbfunction.parameters}
+        vbfunctionlocals.update(self._in_vbfunction.locals)
+
+        parameters = [vbast.Parameter(n, vbfunctionlocals.get(n.name, vbast.Variant))
+                        for n in othervars | itervars] 
+
+        assert len(itervars) == 1
+        itervar = list(itervars)[0]
+
+        compexpr = self.walk(listcomp.elt)
+
+        vbfunction = vbast.Function(fname, parameters, vbast.Collection, scope=vbast.PRIVATE)
+        bodystmt = vbast.CallStatement(
+                        vbast.MemberAccessExpression(
+                            vbast.SimpleNameExpression(fname),
+                            vbast.SimpleNameExpression('Add')),
+                        [compexpr])
+
+        if listcomp.generators[0].ifs:
+            bodystmt = vbast.IfStatement(self.walk(listcomp.generators[0].ifs[0]),
+                                         [bodystmt])
+
+        vbfunction.statements += [
+                                  vbast.DimDeclaration(target.name, vbast.Variant),
+                                  vbast.SetStatement(vbast.SimpleNameExpression(fname),
+                                                     vbast.NewExpression(vbast.Collection)),
+                                  vbast.ForEachStatement(target, itervar, [bodystmt])]
+        self._in_vbfunction.listcomps.append(vbfunction)
+
+        expr =  vbast.IndexExpression(vbast.SimpleNameExpression(vbfunction.name),
+                                     [param.name for param in parameters])
+        expr.set_vbtype(vbast.Collection)
+        return expr
 
     def _walk_block(self, block):
         return sum([self.walk(c) for c in block], [])

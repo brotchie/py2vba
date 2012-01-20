@@ -230,18 +230,23 @@ def test():
 
 def test_list_comprehension(xl, workbook):
     CODE = '''
+@vbmeta(rettype=Collection)
 def test():
-    x = [1,2,3,4,5,6,7,8,9,10]
-    y = [z*z for z in x if x > 3 and x <= 9]
-    sum = 0
-    for z in y:
-        sum += z
-    return sum
+    s = 2
+    x = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    y = [s*z for z in x if z > 3 and z <= 9 and z % 2 == 0]
+    return y
 '''
     pyfcn, vbafcn = lift_code_to_py_and_vba_functions(CODE, 'test', globals(), xl, workbook)
 
     pyresult = pyfcn()
     vbaresult = vbafcn()
 
-    assert pyresult == vbaresult
+    pycount = len(pyresult)
+    vbacount = vbaresult.Count()
+    assert pycount == vbacount
 
+    for i in range(pycount):
+        pyobj = pyresult[i]
+        vbaobj = vbaresult.Item(i+1)
+        assert pyobj == vbaobj

@@ -165,6 +165,7 @@ class Procedure(ASTNode):
     def __init__(self, name, parameters):
         self.name = name
         self.parameters = parameters
+        self.listcomps = []
 
     @property
     def parameters_names(self):
@@ -188,7 +189,8 @@ class Subroutine(Procedure):
             scope += ' ' + STATIC
         return (['%s Sub %s(%s)' % (scope, self.name, paramlist)] +
                 indent(self._reduce_as_code(self.statements)) +  
-                ['End Sub'])
+                ['End Sub'] +
+                self._reduce_as_code(self.listcomps))
 
 class Function(Procedure):
     def __init__(self, name, parameters, rettype, statements=None, scope=PUBLIC, static=False):
@@ -206,7 +208,8 @@ class Function(Procedure):
             scope += ' ' + STATIC
         return (['%s Function %s(%s) As %s' % (scope, self.name, paramlist, self.rettype.name)] +
                 indent(self._reduce_as_code(self.statements)) +  
-                ['End Function'])
+                ['End Function'] + 
+                self._reduce_as_code(self.listcomps))
 
 class ExitSubStatement(ASTNode):
     def as_code(self):
@@ -239,11 +242,11 @@ class CallStatement(Statement):
         return ['%s %s' % (self.lexpression.as_code(), ', '.join(p.as_code() for p in self.parameters))]
 
 class IfStatement(Statement):
-    def __init__(self, test, body, elseifblocks, orelse):
+    def __init__(self, test, body, elseifblocks=None, orelse=None):
         self.test = test
         self.body = body
-        self.elseifblocks = elseifblocks
-        self.orelse = orelse
+        self.elseifblocks = elseifblocks or []
+        self.orelse = orelse or []
 
     def as_code(self):
         code = ['If %s Then' % (self.test.as_code(),)]
@@ -265,6 +268,19 @@ class ForStatement(Statement):
         code = ['For %s = %s To %s' % (self.target.as_code(),
                                        self.ifrom.as_code(),
                                        self.ito.as_code())]
+        code += indent(self._reduce_as_code(self.body))
+        code += ['Next %s' % (self.target.as_code(),)]
+        return code
+
+class ForEachStatement(Statement):
+    def __init__(self, target, iterable, body):
+        self.target = target
+        self.iterable = iterable
+        self.body = body
+
+    def as_code(self):
+        code = ['For Each %s In %s' % (self.target.as_code(),
+                                       self.iterable.as_code())]
         code += indent(self._reduce_as_code(self.body))
         code += ['Next %s' % (self.target.as_code(),)]
         return code
